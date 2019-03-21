@@ -361,6 +361,7 @@ class TBNN:
 
     def contour_plot(self, x_coords, y_coords, f):
         import matplotlib.pyplot as plt
+        import matplotlib.tri as mtri
         """
         Make a contour plot
         :param x_coords: x coordinates of points
@@ -377,7 +378,7 @@ class TBNN:
         y_min = np.min(y_coords)
         y_max = np.max(y_coords)
 
-        triangles = tri.Triangulation(x_coords, y_coords)
+        triangles = mtri.Triangulation(x_coords, y_coords)
         for i in range(9):
             sub = plt.subplot(3, 3, i+1)
             plt.tricontourf(triangles,  f[:, i], cmap='Spectral_r', extend='both')

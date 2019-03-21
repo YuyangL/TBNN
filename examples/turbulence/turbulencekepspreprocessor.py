@@ -1,6 +1,7 @@
 import numpy as np
-
+from numba import jit, njit, prange
 from tbnn import DataProcessor
+from Utilities import timer
 
 """
 Copyright 2017 Sandia Corporation. Under the terms of Contract DE-AC04-94AL85000,
@@ -15,6 +16,8 @@ class TurbulenceKEpsDataProcessor(DataProcessor):
     the anisotropy tensor based on the mean strain rate (Sij) and mean rotation rate (Rij) tensors
     """
     @staticmethod
+    @timer
+    @jit(parallel = True, fastmath = True)
     def calc_Sij_Rij(grad_u, tke, eps, cap=7.):
         """
         Calculates the strain rate and rotation rate tensors.  Normalizes by k and eps:
@@ -27,26 +30,35 @@ class TurbulenceKEpsDataProcessor(DataProcessor):
                     are capped at this level
         :return: Sij, Rij: num_points X 3 X 3 tensors
         """
-
         num_points = grad_u.shape[0]
         eps = np.maximum(eps, 1e-8)
         tke_eps = tke / eps
         Sij = np.zeros((num_points, 3, 3))
         Rij = np.zeros((num_points, 3, 3))
-        for i in range(num_points):
-            Sij[i, :, :] = tke_eps[i] * 0.5 * (grad_u[i, :, :] + np.transpose(grad_u[i, :, :]))
-            Rij[i, :, :] = tke_eps[i] * 0.5 * (grad_u[i, :, :] - np.transpose(grad_u[i, :, :]))
+        for i in prange(num_points):
+            Sij[i, :, :] = tke_eps[i]*0.5*(grad_u[i, :, :] + np.transpose(grad_u[i, :, :]))
+            Rij[i, :, :] = tke_eps[i]*0.5*(grad_u[i, :, :] - np.transpose(grad_u[i, :, :]))
 
+        maxSij, maxRij = np.amax(Sij), np.amax(Rij)
+        minSij, minRij = np.amin(Sij), np.amin(Rij)
+        print(' Max of Sij is ' + str(maxSij) + ', and of Rij is ' + str(maxRij))
+        print(' Min of Sij is ' + str(minSij) + ', and of Rij is ' + str(minRij))
+        # Why caps?????????????
         Sij[Sij > cap] = cap
         Sij[Sij < -cap] = -cap
         Rij[Rij > cap] = cap
         Rij[Rij < -cap] = -cap
 
         # Because we enforced limits on maximum Sij values, we need to re-enforce trace of 0
-        for i in range(num_points):
-            Sij[i, :, :] = Sij[i, :, :] - 1./3. * np.eye(3)*np.trace(Sij[i, :, :])
+        for i in prange(num_points):
+            Sij[i, :, :] = Sij[i, :, :] - 1/3.*np.eye(3)*np.trace(Sij[i, :, :])
+
         return Sij, Rij
 
+
+    @timer
+    # Numba is unable to determine "self" type
+    @jit(parallel = True, fastmath = True)
     def calc_scalar_basis(self, Sij, Rij, is_train=False, cap=2.0, is_scale=True):
         """
         Given the non-dimensionalized mean strain rate and mean rotation rate tensors Sij and Rij,
@@ -73,7 +85,7 @@ class TurbulenceKEpsDataProcessor(DataProcessor):
         num_points = Sij.shape[0]
         num_invariants = 5
         invariants = np.zeros((num_points, num_invariants))
-        for i in range(num_points):
+        for i in prange(num_points):
             invariants[i, 0] = np.trace(np.dot(Sij[i, :, :], Sij[i, :, :]))
             invariants[i, 1] = np.trace(np.dot(Rij[i, :, :], Rij[i, :, :]))
             invariants[i, 2] = np.trace(np.dot(Sij[i, :, :], np.dot(Sij[i, :, :], Sij[i, :, :])))
@@ -84,23 +96,31 @@ class TurbulenceKEpsDataProcessor(DataProcessor):
         if is_scale:
             if self.mu is None or self.std is None:
                 is_train = True
+
             if is_train:
                 self.mu = np.zeros((num_invariants, 2))
                 self.std = np.zeros((num_invariants, 2))
                 self.mu[:, 0] = np.mean(invariants, axis=0)
                 self.std[:, 0] = np.std(invariants, axis=0)
 
-            invariants = (invariants - self.mu[:, 0]) / self.std[:, 0]
+            invariants = (invariants - self.mu[:, 0])/self.std[:, 0]
+            maxInvariants, minInvariants = np.amax(invariants), np.amin(invariants)
+            print(' Max of scaled scalar basis is {}'.format(maxInvariants))
+            print(' Max of scaled scalar basis is {}'.format(minInvariants))
+            # Why cap?????
             invariants[invariants > cap] = cap  # Cap max magnitude
             invariants[invariants < -cap] = -cap
-            invariants = invariants * self.std[:, 0] + self.mu[:, 0]
+            invariants = invariants*self.std[:, 0] + self.mu[:, 0]
             if is_train:
                 self.mu[:, 1] = np.mean(invariants, axis=0)
                 self.std[:, 1] = np.std(invariants, axis=0)
 
-            invariants = (invariants - self.mu[:, 1]) / self.std[:, 1]  # Renormalize a second time after capping
+            invariants = (invariants - self.mu[:, 1])/self.std[:, 1]  # Renormalize a second time after capping
         return invariants
 
+
+    @timer
+    @jit(parallel = True, fastmath = True)
     def calc_tensor_basis(self, Sij, Rij, quadratic_only=False, is_scale=True):
         """
         Given Sij and Rij, it calculates the tensor basis
@@ -133,8 +153,9 @@ class TurbulenceKEpsDataProcessor(DataProcessor):
             num_tensor_basis = 10
         else:
             num_tensor_basis = 4
+
         T = np.zeros((num_points, num_tensor_basis, 3, 3))
-        for i in range(num_points):
+        for i in prange(num_points):
             sij = Sij[i, :, :]
             rij = Rij[i, :, :]
             T[i, 0, :, :] = sij
@@ -160,16 +181,22 @@ class TurbulenceKEpsDataProcessor(DataProcessor):
         # Scale down to promote convergence
         if is_scale:
             scale_factor = [10, 100, 100, 100, 1000, 1000, 10000, 10000, 10000, 10000]
-            for i in range(num_tensor_basis):
+            for i in prange(num_tensor_basis):
                 T[:, i, :, :] /= scale_factor[i]
 
         # Flatten:
-        T_flat = np.zeros((num_points, num_tensor_basis, 9))
-        for i in range(3):
-            for j in range(3):
-                T_flat[:, :, 3*i+j] = T[:, :, i, j]
+        # T_flat = np.zeros((num_points, num_tensor_basis, 9))
+        # for i in prange(3):
+        #     for j in range(3):
+        #         T_flat[:, :, 3*i+j] = T[:, :, i, j]
+        T_flat = T.reshape((T.shape[0], T.shape[1], 9))
+
         return T_flat
 
+
+    @timer
+    # Numba is unable to determine "self" type
+    @jit(parallel = True, fastmath = True)
     def calc_output(self, stresses):
         """
         Given Reynolds stress tensor (num_points X 3 X 3), return flattened non-dimensional anisotropy tensor
@@ -179,17 +206,23 @@ class TurbulenceKEpsDataProcessor(DataProcessor):
         num_points = stresses.shape[0]
         anisotropy = np.zeros((num_points, 3, 3))
 
-        for i in range(3):
+        tke = 0.5*(stresses[:, 0, 0] + stresses[:, 1, 1] + stresses[:, 2, 2])
+        tke = np.maximum(tke, 1e-8)
+        for i in prange(3):
             for j in range(3):
-                tke = 0.5 * (stresses[:, 0, 0] + stresses[:, 1, 1] + stresses[:, 2, 2])
-                tke = np.maximum(tke, 1e-8)
+                # tke = 0.5 * (stresses[:, 0, 0] + stresses[:, 1, 1] + stresses[:, 2, 2])
+                # tke = np.maximum(tke, 1e-8)
                 anisotropy[:, i, j] = stresses[:, i, j]/(2.0 * tke)
+
             anisotropy[:, i, i] -= 1./3.
+
         anisotropy_flat = np.zeros((num_points, 9))
-        for i in range(3):
+        for i in prange(3):
             for j in range(3):
                 anisotropy_flat[:, 3*i+j] = anisotropy[:, i, j]
+
         return anisotropy_flat
+
 
     @staticmethod
     def calc_rans_anisotropy(grad_u, tke, eps):
@@ -278,3 +311,4 @@ class TurbulenceKEpsDataProcessor(DataProcessor):
                 labels[i, 6] = A[0, 2]
 
         return labels
+

@@ -1,5 +1,7 @@
 # Tensor Basis Neural Network
 
+See https://github.com/tbnn/tbnn.
+
 The Tensor Basis Neural Network (TBNN) package provides an interface for building, training, and
 testing neural networks for systems that have known invariance properties.  This package is intended
 as a useful reference and starting point for researchers hoping to develop data-driven constitutive models

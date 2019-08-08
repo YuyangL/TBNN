@@ -17,6 +17,7 @@ class TurbulenceKEpsDataProcessor(DataProcessor):
     """
     @staticmethod
     @timer
+    # Advanced slicing not supported by njit, e.g. Sij[Sij > cap] - ...
     @jit(parallel = True, fastmath = True)
     def calc_Sij_Rij(grad_u, tke, eps, cap=7.):
         """
@@ -119,9 +120,10 @@ class TurbulenceKEpsDataProcessor(DataProcessor):
         return invariants
 
 
+    @staticmethod
     @timer
-    @jit(parallel = True, fastmath = True)
-    def calc_tensor_basis(self, Sij, Rij, quadratic_only=False, is_scale=True):
+    @njit(parallel = True, fastmath = True)
+    def calc_tensor_basis(Sij, Rij, quadratic_only=False, is_scale=True):
         """
         Given Sij and Rij, it calculates the tensor basis
         :param Sij: normalized strain rate tensor
@@ -194,10 +196,10 @@ class TurbulenceKEpsDataProcessor(DataProcessor):
         return T_flat
 
 
+    @staticmethod
     @timer
-    # Numba is unable to determine "self" type
-    @jit(parallel = True, fastmath = True)
-    def calc_output(self, stresses):
+    @njit(parallel = True, fastmath = True)
+    def calc_output(stresses):
         """
         Given Reynolds stress tensor (num_points X 3 X 3), return flattened non-dimensional anisotropy tensor
         :param stresses: Reynolds stress tensor
@@ -207,6 +209,7 @@ class TurbulenceKEpsDataProcessor(DataProcessor):
         anisotropy = np.zeros((num_points, 3, 3))
 
         tke = 0.5*(stresses[:, 0, 0] + stresses[:, 1, 1] + stresses[:, 2, 2])
+        # Avoid FPE
         tke = np.maximum(tke, 1e-8)
         for i in prange(3):
             for j in range(3):
@@ -225,6 +228,8 @@ class TurbulenceKEpsDataProcessor(DataProcessor):
 
 
     @staticmethod
+    @timer
+    @jit(parallel = True, fastmath = True)
     def calc_rans_anisotropy(grad_u, tke, eps):
         """
         Calculate the Reynolds stress anisotropy tensor (num_points X 9) that RANS would have predicted
@@ -239,17 +244,20 @@ class TurbulenceKEpsDataProcessor(DataProcessor):
 
         # Calculate anisotropy tensor (num_points X 3 X 3)
         # Note: Sij is already non-dimensionalized with tke/eps
-        rans_anisotropy_matrix = - c_mu * sij
+        rans_anisotropy_matrix = - c_mu*sij
 
         # Flatten into num_points X 9 array
         num_points = sij.shape[0]
         rans_anisotropy = np.zeros((num_points, 9))
-        for i in range(3):
+        for i in prange(3):
             for j in range(3):
                 rans_anisotropy[:, i*3+j] = rans_anisotropy_matrix[:, i, j]
         return rans_anisotropy
 
+
     @staticmethod
+    @timer
+    @njit(parallel = True, fastmath = True)
     def make_realizable(labels):
         """
         This function is specific to turbulence modeling.
@@ -262,7 +270,7 @@ class TurbulenceKEpsDataProcessor(DataProcessor):
         """
         numPoints = labels.shape[0]
         A = np.zeros((3, 3))
-        for i in range(numPoints):
+        for i in prange(numPoints):
             # Scales all on-diags to retain zero trace
             if np.min(labels[i, [0, 4, 8]]) < -1./3.:
                 labels[i, [0, 4, 8]] *= -1./(3.*np.min(labels[i, [0, 4, 8]]))
@@ -286,7 +294,8 @@ class TurbulenceKEpsDataProcessor(DataProcessor):
             A[2, 1] = labels[i, 5]
             A[0, 2] = labels[i, 2]
             A[2, 0] = labels[i, 2]
-            evalues, evectors = np.linalg.eig(A)
+            # For real symmetric matrices
+            evalues, evectors = np.linalg.eigh(A)
             if np.max(evalues) < (3.*np.abs(np.sort(evalues)[1])-np.sort(evalues)[1])/2.:
                 evalues = evalues*(3.*np.abs(np.sort(evalues)[1])-np.sort(evalues)[1])/(2.*np.max(evalues))
                 A = np.dot(np.dot(evectors, np.diag(evalues)), np.linalg.inv(evectors))

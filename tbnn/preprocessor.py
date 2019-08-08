@@ -21,7 +21,7 @@ class DataProcessor:
         self.std = None
 
     def calc_scalar_basis(self, input_tensors, is_train=False, *args, **kwargs):
-        if is_train is True or self.mu is None or self.std is None:
+        if is_train or self.mu is None or self.std is None:
             print("Re-setting normalization constants")
 
     def calc_tensor_basis(self, input_tensors, *args, **kwargs):

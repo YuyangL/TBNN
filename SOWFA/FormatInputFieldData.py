@@ -19,14 +19,12 @@ from Utilities import sampleData
 """
 User Inputs
 """
-caseName = 'ALM_N_H_ParTurb'
+caseName = 'ALM_N_H_OneTurb'
 caseDir = '/media/yluan'
 times = 'latest'
-fields = ('kResolved', 'kSGSmean', 'epsilonSGSmean', 'nuSGSmean', 'gradUAvg', 'uuPrime2')
+fields = ('kResolved', 'kSGSmean', 'epsilonSGSmean', 'nuSGSmean', 'grad_UAvg', 'uuPrime2')
 # Whether use existing pickle raw field data and/or ML x, y pickle data
-useRawPickle, useXYpickle = True, False
-# Whether save pickle fields
-saveFields = True
+useRawPickle, useXYpickle = True, True
 
 # Whether confine the domain of interest, useful if mesh is too large
 confineBox, plotConfinedBox = True, True
@@ -42,7 +40,7 @@ boxRot = np.pi/6
 # Confine box origin, width, length, height
 boxOrig = (0, 0, 0)  # (x, y, z)
 boxL, boxW, boxH = 0, 0, 0  # float
-# Absolute cap value for Sji and Rij and scalar basis x
+# Absolute cap value for Sij and Rij and scalar basis x
 capSijRij, capScalarBasis = 1e9, 1e9
 
 
@@ -55,14 +53,14 @@ sampling = True
 # Number of samples and whether to use with replacement, i.e. same sample can be re-picked
 sampleSize, replace = 10000, False
 # Define parameters:
-num_layers = 2  # Number of hidden layers in the TBNN
+num_layers = 10  # Number of hidden layers in the TBNN
 num_nodes = 20  # Number of nodes per hidden layer
 max_epochs = 2000  # Max number of epochs during training
 min_epochs = 1000  # Min number of training epochs required
 interval = 100  # Frequency at which convergence is checked
 average_interval = 4  # Number of intervals averaged over for early stopping criteria
 split_fraction = 0.8  # Fraction of data to use for training
-enforce_realizability = True  # Whether or not we want to enforce realizability constraint on Reynolds stresses
+enforce_realizability = False  # Whether or not we want to enforce realizability constraint on Reynolds stresses
 num_realizability_its = 5  # Number of iterations to enforce realizability
 seed = 12345 # use for reproducibility, set equal to None for no seeding
 
@@ -70,14 +68,17 @@ seed = 12345 # use for reproducibility, set equal to None for no seeding
 """
 Process User Inputs
 """
+# Save pickle fields automatically
+saveFields = True if any((useRawPickle, useXYpickle)) else False
 inputsEnsembleName = 'Inputs_' + caseName
 if times == 'latest':
     if caseName == 'ALM_N_H_ParTurb':
         times = '22000.0918025'
+    elif caseName == 'ALM_N_H_OneTurb':
+        times = '24995.0788025'
 
 if confineBox and boxAutoDim is not None:
     if caseName == 'ALM_N_H_ParTurb':
-        boxRot = np.pi/6
         # 1st refinement zone as confinement box
         if boxAutoDim == 'first':
             boxOrig = (1074.225, 599.464, 0)
@@ -85,6 +86,14 @@ if confineBox and boxAutoDim is not None:
         # 2nd refinement zone as confinement box
         elif boxAutoDim == 'second':
             boxOrig = (1120.344, 771.583, 0)
+            boxL, boxW, boxH = 882, 378, 216
+    elif caseName == 'ALM_N_H_OneTurb':
+        if boxAutoDim == 'first':
+            boxOrig = (948.225, 817.702, 0)
+            boxL, boxW, boxH = 1134, 630, 405
+        # 2nd refinement zone as confinement box
+        elif boxAutoDim == 'second':
+            boxOrig = (994.344, 989.583, 0)
             boxL, boxW, boxH = 882, 378, 216
 
 
@@ -102,12 +111,14 @@ if not useRawPickle:
     # du/dx, du/dy, du/dz
     # dv/dx, dv/dy, dv/dz
     # dw/dx, dw/dy, dw/dz
-    gradUAvg = fieldData['gradUAvg']
+    grad_UAvg = fieldData['grad_UAvg']
     # Get total temporal mean TKE, nCell
     kMean = fieldData['kResolved'] + fieldData['kSGSmean']
     # Get total temporal mean turbulence dissipation rate, nCell
-    epsilonMean = case.calcMeanDissipationRateField(epsilonSGSmean = fieldData['epsilonSGSmean'], nuSGSmean = fieldData[
-        'nuSGSmean'], resultPath = case.resultPath[times], save = saveFields)
+    epsilonMean = case.getMeanDissipationRateField(epsilonSGSmean = fieldData['epsilonSGSmean'], nuSGSmean = fieldData[
+        'nuSGSmean'], resultPath = case.resultPath[times], saveToTime = times)
+    epsMeanMax, epsMeanMin = np.amax(epsilonMean), np.amin(epsilonMean)
+    print(' Max of epsilonMean is {0}, min of epsilonMean is {1}'.format(epsMeanMax, epsMeanMin))
     # Expand symmetric tensor to it's full form, nCell x 9
     # From xx, xy, xz
     #          yy, yz
@@ -122,22 +133,21 @@ if not useRawPickle:
     kMean, epsilonMean = kMean.reshape((-1, 1)), epsilonMean.reshape((-1, 1))
     # Horizontally stack these field data, nCell x 20
     # tke, epsilon, grad_u_00, grad_u_01, grad_u_02, grad_u_10, grad_u_11, grad_u_12, grad_u_20, grad_u_21, grad_u_22, uu_00, uu_01, uu_02, uu_10, uu_11, uu_12, uu_20, uu_21, uu_22
-    inputsEnsemble = np.hstack((kMean, epsilonMean, fieldData['gradUAvg'], uuPrime2))
+    inputsEnsemble = np.hstack((kMean, epsilonMean, grad_UAvg, uuPrime2))
     # Save pickle if requested
     if saveFields:
         case.savePickleData(listData = inputsEnsemble, resultPath = case.resultPath[times], fileNames = inputsEnsembleName)
 
     # Read cell center coordinates, nCell and nCell x 3
-    ccx, ccy, ccz, cc = case.readCellCenterCoordinates()
+    ccx, ccy, ccz, _ = case.readCellCenterCoordinates()
     # Confine to domain of interest if requested
     if confineBox:
         ccx, ccy, ccz, cc, inputsEnsemble, box, flags = case.confineFieldDomain_Rotated(ccx, ccy, ccz, inputsEnsemble,
                                                                                     boxL = boxL, boxW = boxW, boxH = boxH, boxO = boxOrig, boxRot = boxRot,
-                                                                                    save = saveFields, resultPath = case.resultPath[times], fileNameSub = confinedFieldNameSub, valsName = inputsEnsembleName)
+                                                                                    fileNameSub = confinedFieldNameSub, valsName = inputsEnsembleName)
         # Refresh new TKE, dissipation rate, grad(U), u'u' of the confined region
         kMean, epsilonMean = inputsEnsemble[:, 0], inputsEnsemble[:, 1]
-        gradUAvg, uuPrime2 = inputsEnsemble[:, 2:11], inputsEnsemble[:, 11:]
-
+        grad_UAvg, uuPrime2 = inputsEnsemble[:, 2:11], inputsEnsemble[:, 11:]
         # Visualize the confined box if requested
         if plotConfinedBox:
             fig = plt.figure()
@@ -149,6 +159,7 @@ if not useRawPickle:
             ax.set_ylim(0, 3000)
             # plt.show()
 
+# Else if use existing pickle field data
 else:
     # If read whole field pickle data
     if not confineBox:
@@ -160,11 +171,11 @@ else:
         inputsEnsemble = pickle.load(open(case.resultPath[times] + inputsEnsembleName + '_' + confinedFieldNameSub + '.p', 'rb'))
 
     kMean, epsilonMean = inputsEnsemble[:, 0], inputsEnsemble[:, 1]
-    gradUAvg, uuPrime2 = inputsEnsemble[:, 2:11], inputsEnsemble[:, 11:]
+    grad_UAvg, uuPrime2 = inputsEnsemble[:, 2:11], inputsEnsemble[:, 11:]
     print('\nPickle raw inputs data read')
 
 # Reshape tensors from nCell x 9 to nCell x 3 x 3
-gradUAvg, uuPrime2 = gradUAvg.reshape((gradUAvg.shape[0], 3, 3)), uuPrime2.reshape((uuPrime2.shape[0], 3, 3))
+grad_UAvg, uuPrime2 = grad_UAvg.reshape((grad_UAvg.shape[0], 3, 3)), uuPrime2.reshape((uuPrime2.shape[0], 3, 3))
 
 
 """
@@ -177,7 +188,7 @@ fileNames = ('Sij', 'Rij', 'x', 'tb', 'y') if not confineBox \
 # Calculate inputs and outputs
 if not useXYpickle:
     data_processor = TurbulenceKEpsDataProcessor()
-    Sij, Rij = data_processor.calc_Sij_Rij(gradUAvg, kMean, epsilonMean, cap = capSijRij)
+    Sij, Rij = data_processor.calc_Sij_Rij(grad_UAvg, kMean, epsilonMean, cap = capSijRij)
     print('\nSij and Rij ready with |{}| cap'.format(capSijRij))
     x = data_processor.calc_scalar_basis(Sij, Rij, is_train = True, cap = capScalarBasis)  # Scalar basis
     print('\nInput scalar basis ready with |{}| cap'.format(capScalarBasis))
